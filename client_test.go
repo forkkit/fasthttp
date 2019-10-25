@@ -20,6 +20,8 @@ import (
 )
 
 func TestClientURLAuth(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]string{
 		"user:pass@": "Basic dXNlcjpwYXNz",
 		"foo:@":      "Basic Zm9vOg==",
@@ -58,6 +60,11 @@ func TestClientURLAuth(t *testing.T) {
 }
 
 func TestClientNilResp(t *testing.T) {
+	// For some reason running this test in parallel sometimes
+	// triggers the race checker. I have not been able to find an
+	// actual race condition so I think it's something else going wrong.
+	// For now just don't run this test in parallel.
+
 	ln := fasthttputil.NewInmemoryListener()
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
@@ -81,6 +88,8 @@ func TestClientNilResp(t *testing.T) {
 }
 
 func TestClientParseConn(t *testing.T) {
+	t.Parallel()
+
 	network := "tcp"
 	ln, _ := net.Listen(network, "127.0.0.1:0")
 	s := &Server{
@@ -113,6 +122,8 @@ func TestClientParseConn(t *testing.T) {
 }
 
 func TestClientPostArgs(t *testing.T) {
+	t.Parallel()
+
 	ln := fasthttputil.NewInmemoryListener()
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
@@ -149,6 +160,7 @@ func TestClientPostArgs(t *testing.T) {
 }
 
 func TestClientRedirectSameSchema(t *testing.T) {
+	t.Parallel()
 
 	listenHTTPS1 := testClientRedirectListener(t, true)
 	defer listenHTTPS1.Close()
@@ -192,6 +204,7 @@ func TestClientRedirectSameSchema(t *testing.T) {
 }
 
 func TestClientRedirectChangingSchemaHttp2Https(t *testing.T) {
+	t.Parallel()
 
 	listenHTTPS := testClientRedirectListener(t, true)
 	defer listenHTTPS.Close()
@@ -230,11 +243,9 @@ func TestClientRedirectChangingSchemaHttp2Https(t *testing.T) {
 		t.Fatalf("HostClient error code response %d", statusCode)
 		return
 	}
-
 }
 
 func testClientRedirectListener(t *testing.T, isTLS bool) net.Listener {
-
 	var ln net.Listener
 	var err error
 	var tlsConfig *tls.Config
@@ -296,6 +307,8 @@ func testClientRedirectChangingSchemaServer(t *testing.T, https, http net.Listen
 }
 
 func TestClientHeaderCase(t *testing.T) {
+	t.Parallel()
+
 	ln := fasthttputil.NewInmemoryListener()
 	defer ln.Close()
 
@@ -334,6 +347,8 @@ func TestClientHeaderCase(t *testing.T) {
 }
 
 func TestClientReadTimeout(t *testing.T) {
+	t.Parallel()
+
 	// This test is rather slow and increase the total test time
 	// from 2.5 seconds to 6.5 seconds.
 	if testing.Short() {
@@ -351,7 +366,7 @@ func TestClientReadTimeout(t *testing.T) {
 				timeout = true
 			}
 		},
-		Logger: &customLogger{}, // Don't print closed pipe errors.
+		Logger: &testLogger{}, // Don't print closed pipe errors.
 	}
 	go s.Serve(ln)
 
@@ -404,6 +419,8 @@ func TestClientReadTimeout(t *testing.T) {
 }
 
 func TestClientDefaultUserAgent(t *testing.T) {
+	t.Parallel()
+
 	ln := fasthttputil.NewInmemoryListener()
 
 	userAgentSeen := ""
@@ -434,6 +451,8 @@ func TestClientDefaultUserAgent(t *testing.T) {
 }
 
 func TestClientSetUserAgent(t *testing.T) {
+	t.Parallel()
+
 	ln := fasthttputil.NewInmemoryListener()
 
 	userAgentSeen := ""
@@ -497,6 +516,8 @@ func TestClientNoUserAgent(t *testing.T) {
 }
 
 func TestClientDoWithCustomHeaders(t *testing.T) {
+	t.Parallel()
+
 	// make sure that the client sends all the request headers and body.
 	ln := fasthttputil.NewInmemoryListener()
 	c := &Client{
@@ -592,18 +613,26 @@ func TestClientDoWithCustomHeaders(t *testing.T) {
 }
 
 func TestPipelineClientDoSerial(t *testing.T) {
+	t.Parallel()
+
 	testPipelineClientDoConcurrent(t, 1, 0, 0)
 }
 
 func TestPipelineClientDoConcurrent(t *testing.T) {
+	t.Parallel()
+
 	testPipelineClientDoConcurrent(t, 10, 0, 1)
 }
 
 func TestPipelineClientDoBatchDelayConcurrent(t *testing.T) {
+	t.Parallel()
+
 	testPipelineClientDoConcurrent(t, 10, 5*time.Millisecond, 1)
 }
 
 func TestPipelineClientDoBatchDelayConcurrentMultiConn(t *testing.T) {
+	t.Parallel()
+
 	testPipelineClientDoConcurrent(t, 10, 5*time.Millisecond, 3)
 }
 
@@ -631,7 +660,7 @@ func testPipelineClientDoConcurrent(t *testing.T, concurrency int, maxBatchDelay
 		MaxConns:           maxConns,
 		MaxPendingRequests: concurrency,
 		MaxBatchDelay:      maxBatchDelay,
-		Logger:             &customLogger{},
+		Logger:             &testLogger{},
 	}
 
 	clientStopCh := make(chan struct{}, concurrency)
@@ -699,7 +728,9 @@ func testPipelineClientDo(t *testing.T, c *PipelineClient) {
 	ReleaseResponse(resp)
 }
 
-func TestClientDoTimeoutDisableNormalizing(t *testing.T) {
+func TestClientDoTimeoutDisableHeaderNamesNormalizing(t *testing.T) {
+	t.Parallel()
+
 	ln := fasthttputil.NewInmemoryListener()
 
 	s := &Server{
@@ -751,7 +782,62 @@ func TestClientDoTimeoutDisableNormalizing(t *testing.T) {
 	}
 }
 
+func TestClientDoTimeoutDisablePathNormalizing(t *testing.T) {
+	t.Parallel()
+
+	ln := fasthttputil.NewInmemoryListener()
+
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			uri := ctx.URI()
+			uri.DisablePathNormalizing = true
+			ctx.Response.Header.Set("received-uri", string(uri.FullURI()))
+		},
+	}
+
+	serverStopCh := make(chan struct{})
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(serverStopCh)
+	}()
+
+	c := &Client{
+		Dial: func(addr string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		DisablePathNormalizing: true,
+	}
+
+	urlWithEncodedPath := "http://example.com/encoded/Y%2BY%2FY%3D/stuff"
+
+	var req Request
+	req.SetRequestURI(urlWithEncodedPath)
+	var resp Response
+	for i := 0; i < 5; i++ {
+		if err := c.DoTimeout(&req, &resp, time.Second); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		hv := resp.Header.Peek("received-uri")
+		if string(hv) != urlWithEncodedPath {
+			t.Fatalf("request uri was normalized: %q. Expecting %q", hv, urlWithEncodedPath)
+		}
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	select {
+	case <-serverStopCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
 func TestHostClientPendingRequests(t *testing.T) {
+	t.Parallel()
+
 	const concurrency = 10
 	doneCh := make(chan struct{})
 	readyCh := make(chan struct{}, concurrency)
@@ -927,6 +1013,8 @@ func TestHostClientMaxConnsWithDeadline(t *testing.T) {
 }
 
 func TestHostClientMaxConnDuration(t *testing.T) {
+	t.Parallel()
+
 	ln := fasthttputil.NewInmemoryListener()
 
 	connectionCloseCount := uint32(0)
@@ -983,6 +1071,8 @@ func TestHostClientMaxConnDuration(t *testing.T) {
 }
 
 func TestHostClientMultipleAddrs(t *testing.T) {
+	t.Parallel()
+
 	ln := fasthttputil.NewInmemoryListener()
 
 	s := &Server{
@@ -1041,6 +1131,8 @@ func TestHostClientMultipleAddrs(t *testing.T) {
 }
 
 func TestClientFollowRedirects(t *testing.T) {
+	t.Parallel()
+
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
 			switch string(ctx.Path()) {
@@ -1102,6 +1194,8 @@ func TestClientFollowRedirects(t *testing.T) {
 }
 
 func TestClientGetTimeoutSuccess(t *testing.T) {
+	t.Parallel()
+
 	s := startEchoServer(t, "tcp", "127.0.0.1:")
 	defer s.Stop()
 
@@ -1109,6 +1203,8 @@ func TestClientGetTimeoutSuccess(t *testing.T) {
 }
 
 func TestClientGetTimeoutSuccessConcurrent(t *testing.T) {
+	t.Parallel()
+
 	s := startEchoServer(t, "tcp", "127.0.0.1:")
 	defer s.Stop()
 
@@ -1124,6 +1220,8 @@ func TestClientGetTimeoutSuccessConcurrent(t *testing.T) {
 }
 
 func TestClientDoTimeoutSuccess(t *testing.T) {
+	t.Parallel()
+
 	s := startEchoServer(t, "tcp", "127.0.0.1:")
 	defer s.Stop()
 
@@ -1131,6 +1229,8 @@ func TestClientDoTimeoutSuccess(t *testing.T) {
 }
 
 func TestClientDoTimeoutSuccessConcurrent(t *testing.T) {
+	t.Parallel()
+
 	s := startEchoServer(t, "tcp", "127.0.0.1:")
 	defer s.Stop()
 
@@ -1146,6 +1246,8 @@ func TestClientDoTimeoutSuccessConcurrent(t *testing.T) {
 }
 
 func TestClientGetTimeoutError(t *testing.T) {
+	t.Parallel()
+
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
 			return &readTimeoutConn{t: time.Second}, nil
@@ -1156,6 +1258,8 @@ func TestClientGetTimeoutError(t *testing.T) {
 }
 
 func TestClientGetTimeoutErrorConcurrent(t *testing.T) {
+	t.Parallel()
+
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
 			return &readTimeoutConn{t: time.Second}, nil
@@ -1175,6 +1279,8 @@ func TestClientGetTimeoutErrorConcurrent(t *testing.T) {
 }
 
 func TestClientDoTimeoutError(t *testing.T) {
+	t.Parallel()
+
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
 			return &readTimeoutConn{t: time.Second}, nil
@@ -1185,6 +1291,8 @@ func TestClientDoTimeoutError(t *testing.T) {
 }
 
 func TestClientDoTimeoutErrorConcurrent(t *testing.T) {
+	t.Parallel()
+
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
 			return &readTimeoutConn{t: time.Second}, nil
@@ -1264,6 +1372,8 @@ func (r *readTimeoutConn) RemoteAddr() net.Addr {
 }
 
 func TestClientNonIdempotentRetry(t *testing.T) {
+	t.Parallel()
+
 	dialsCount := 0
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
@@ -1312,6 +1422,8 @@ func TestClientNonIdempotentRetry(t *testing.T) {
 }
 
 func TestClientIdempotentRequest(t *testing.T) {
+	t.Parallel()
+
 	dialsCount := 0
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
@@ -1441,6 +1553,8 @@ func (r *singleReadConn) RemoteAddr() net.Addr {
 }
 
 func TestClientHTTPSInvalidServerName(t *testing.T) {
+	t.Parallel()
+
 	sHTTPS := startEchoServerTLS(t, "tcp", "127.0.0.1:")
 	defer sHTTPS.Stop()
 
@@ -1455,6 +1569,8 @@ func TestClientHTTPSInvalidServerName(t *testing.T) {
 }
 
 func TestClientHTTPSConcurrent(t *testing.T) {
+	t.Parallel()
+
 	sHTTP := startEchoServer(t, "tcp", "127.0.0.1:")
 	defer sHTTP.Stop()
 
@@ -1484,6 +1600,8 @@ func TestClientHTTPSConcurrent(t *testing.T) {
 }
 
 func TestClientManyServers(t *testing.T) {
+	t.Parallel()
+
 	var addrs []string
 	for i := 0; i < 10; i++ {
 		s := startEchoServer(t, "tcp", "127.0.0.1:")
@@ -1505,6 +1623,8 @@ func TestClientManyServers(t *testing.T) {
 }
 
 func TestClientGet(t *testing.T) {
+	t.Parallel()
+
 	s := startEchoServer(t, "tcp", "127.0.0.1:")
 	defer s.Stop()
 
@@ -1512,6 +1632,8 @@ func TestClientGet(t *testing.T) {
 }
 
 func TestClientPost(t *testing.T) {
+	t.Parallel()
+
 	s := startEchoServer(t, "tcp", "127.0.0.1:")
 	defer s.Stop()
 
@@ -1519,6 +1641,8 @@ func TestClientPost(t *testing.T) {
 }
 
 func TestClientConcurrent(t *testing.T) {
+	t.Parallel()
+
 	s := startEchoServer(t, "tcp", "127.0.0.1:")
 	defer s.Stop()
 
@@ -1546,6 +1670,8 @@ func skipIfNotUnix(tb testing.TB) {
 }
 
 func TestHostClientGet(t *testing.T) {
+	t.Parallel()
+
 	skipIfNotUnix(t)
 	addr := "TestHostClientGet.unix"
 	s := startEchoServer(t, "unix", addr)
@@ -1556,6 +1682,8 @@ func TestHostClientGet(t *testing.T) {
 }
 
 func TestHostClientPost(t *testing.T) {
+	t.Parallel()
+
 	skipIfNotUnix(t)
 	addr := "./TestHostClientPost.unix"
 	s := startEchoServer(t, "unix", addr)
@@ -1566,6 +1694,8 @@ func TestHostClientPost(t *testing.T) {
 }
 
 func TestHostClientConcurrent(t *testing.T) {
+	t.Parallel()
+
 	skipIfNotUnix(t)
 	addr := "./TestHostClientConcurrent.unix"
 	s := startEchoServer(t, "unix", addr)
@@ -1756,7 +1886,7 @@ func startEchoServerExt(t *testing.T, network, addr string, isTLS bool) *testEch
 				ctx.PostArgs().WriteTo(ctx)
 			}
 		},
-		Logger: &customLogger{}, // Ignore log output.
+		Logger: &testLogger{}, // Ignore log output.
 	}
 	ch := make(chan struct{})
 	go func() {
@@ -1775,6 +1905,8 @@ func startEchoServerExt(t *testing.T, network, addr string, isTLS bool) *testEch
 }
 
 func TestClientTLSHandshakeTimeout(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("skipping test in short mode")
 	}
