@@ -19,6 +19,39 @@ import (
 	"github.com/valyala/fasthttp/fasthttputil"
 )
 
+func TestClientGetWithBody(t *testing.T) {
+	t.Parallel()
+
+	ln := fasthttputil.NewInmemoryListener()
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			body := ctx.Request.Body()
+			ctx.Write(body)
+		},
+	}
+	go s.Serve(ln)
+	c := &Client{
+		Dial: func(addr string) (net.Conn, error) {
+			return ln.Dial()
+		},
+	}
+	req, res := AcquireRequest(), AcquireResponse()
+	defer func() {
+		ReleaseRequest(req)
+		ReleaseResponse(res)
+	}()
+	req.Header.SetMethod(MethodGet)
+	req.SetRequestURI("http://example.com")
+	req.SetBodyString("test")
+	err := c.Do(req, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Body()) == 0 {
+		t.Fatal("missing request body")
+	}
+}
+
 func TestClientURLAuth(t *testing.T) {
 	t.Parallel()
 
@@ -37,7 +70,7 @@ func TestClientURLAuth(t *testing.T) {
 			ch <- string(ctx.Request.Header.Peek(HeaderAuthorization))
 		},
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
 			return ln.Dial()
@@ -70,7 +103,7 @@ func TestClientNilResp(t *testing.T) {
 		Handler: func(ctx *RequestCtx) {
 		},
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
 			return ln.Dial()
@@ -94,10 +127,9 @@ func TestClientParseConn(t *testing.T) {
 	ln, _ := net.Listen(network, "127.0.0.1:0")
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
-			return
 		},
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 	host := ln.Addr().String()
 	c := &Client{}
 	req, res := AcquireRequest(), AcquireResponse()
@@ -106,7 +138,9 @@ func TestClientParseConn(t *testing.T) {
 		ReleaseResponse(res)
 	}()
 	req.SetRequestURI("http://" + host + "")
-	c.Do(req, res)
+	if err := c.Do(req, res); err != nil {
+		t.Fatal(err)
+	}
 
 	if res.RemoteAddr().Network() != network {
 		t.Fatalf("req RemoteAddr parse network fail: %s, hope: %s", res.RemoteAddr().Network(), network)
@@ -131,10 +165,10 @@ func TestClientPostArgs(t *testing.T) {
 			if len(body) == 0 {
 				return
 			}
-			ctx.Write(body)
+			ctx.Write(body) //nolint:errcheck
 		},
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
 			return ln.Dial()
@@ -294,7 +328,7 @@ func testClientRedirectChangingSchemaServer(t *testing.T, https, http net.Listen
 	go func() {
 		err := s.Serve(ln)
 		if err != nil {
-			t.Fatalf("unexpected error returned from Serve(): %s", err)
+			t.Errorf("unexpected error returned from Serve(): %s", err)
 		}
 		close(ch)
 	}()
@@ -315,9 +349,9 @@ func TestClientHeaderCase(t *testing.T) {
 	go func() {
 		c, err := ln.Accept()
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
 		}
-		c.Write([]byte("HTTP/1.1 200 OK\r\n" +
+		c.Write([]byte("HTTP/1.1 200 OK\r\n" + //nolint:errcheck
 			"content-type: text/plain\r\n" +
 			"transfer-encoding: chunked\r\n\r\n" +
 			"24\r\nThis is the data in the first chunk \r\n" +
@@ -368,7 +402,7 @@ func TestClientReadTimeout(t *testing.T) {
 		},
 		Logger: &testLogger{}, // Don't print closed pipe errors.
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 
 	c := &HostClient{
 		ReadTimeout:               time.Second * 4,
@@ -402,7 +436,9 @@ func TestClientReadTimeout(t *testing.T) {
 		req.SetRequestURI("http://localhost")
 		req.SetConnectionClose()
 
-		c.Do(req, res)
+		if err := c.Do(req, res); err != ErrTimeout {
+			t.Errorf("expected ErrTimeout got %#v", err)
+		}
 
 		ReleaseRequest(req)
 		ReleaseResponse(res)
@@ -429,7 +465,7 @@ func TestClientDefaultUserAgent(t *testing.T) {
 			userAgentSeen = string(ctx.UserAgent())
 		},
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 
 	c := &Client{
 		Dial: func(addr string) (net.Conn, error) {
@@ -461,7 +497,7 @@ func TestClientSetUserAgent(t *testing.T) {
 			userAgentSeen = string(ctx.UserAgent())
 		},
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 
 	userAgent := "I'm not fasthttp"
 	c := &Client{
@@ -493,7 +529,7 @@ func TestClientNoUserAgent(t *testing.T) {
 			userAgentSeen = string(ctx.UserAgent())
 		},
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 
 	c := &Client{
 		NoDefaultUserAgentHeader: true,
@@ -641,14 +677,14 @@ func testPipelineClientDoConcurrent(t *testing.T, concurrency int, maxBatchDelay
 
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
-			ctx.WriteString("OK")
+			ctx.WriteString("OK") //nolint:errcheck
 		},
 	}
 
 	serverStopCh := make(chan struct{})
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			t.Fatalf("unexpected error: %s", err)
+			t.Errorf("unexpected error: %s", err)
 		}
 		close(serverStopCh)
 	}()
@@ -743,7 +779,7 @@ func TestClientDoTimeoutDisableHeaderNamesNormalizing(t *testing.T) {
 	serverStopCh := make(chan struct{})
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			t.Fatalf("unexpected error: %s", err)
+			t.Errorf("unexpected error: %s", err)
 		}
 		close(serverStopCh)
 	}()
@@ -798,7 +834,7 @@ func TestClientDoTimeoutDisablePathNormalizing(t *testing.T) {
 	serverStopCh := make(chan struct{})
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			t.Fatalf("unexpected error: %s", err)
+			t.Errorf("unexpected error: %s", err)
 		}
 		close(serverStopCh)
 	}()
@@ -851,7 +887,7 @@ func TestHostClientPendingRequests(t *testing.T) {
 	serverStopCh := make(chan struct{})
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			t.Fatalf("unexpected error: %s", err)
+			t.Errorf("unexpected error: %s", err)
 		}
 		close(serverStopCh)
 	}()
@@ -945,13 +981,13 @@ func TestHostClientMaxConnsWithDeadline(t *testing.T) {
 				emptyBodyCount++
 			}
 
-			ctx.WriteString("foo")
+			ctx.WriteString("foo") //nolint:errcheck
 		},
 	}
 	serverStopCh := make(chan struct{})
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			t.Fatalf("unexpected error: %s", err)
+			t.Errorf("unexpected error: %s", err)
 		}
 		close(serverStopCh)
 	}()
@@ -981,18 +1017,18 @@ func TestHostClientMaxConnsWithDeadline(t *testing.T) {
 						time.Sleep(time.Millisecond)
 						continue
 					}
-					t.Fatalf("unexpected error: %s", err)
+					t.Errorf("unexpected error: %s", err)
 				}
 				break
 			}
 
 			if resp.StatusCode() != StatusOK {
-				t.Fatalf("unexpected status code %d. Expecting %d", resp.StatusCode(), StatusOK)
+				t.Errorf("unexpected status code %d. Expecting %d", resp.StatusCode(), StatusOK)
 			}
 
 			body := resp.Body()
 			if string(body) != "foo" {
-				t.Fatalf("unexpected body %q. Expecting %q", body, "abcd")
+				t.Errorf("unexpected body %q. Expecting %q", body, "abcd")
 			}
 		}()
 	}
@@ -1020,7 +1056,7 @@ func TestHostClientMaxConnDuration(t *testing.T) {
 	connectionCloseCount := uint32(0)
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
-			ctx.WriteString("abcd")
+			ctx.WriteString("abcd") //nolint:errcheck
 			if ctx.Request.ConnectionClose() {
 				atomic.AddUint32(&connectionCloseCount, 1)
 			}
@@ -1029,7 +1065,7 @@ func TestHostClientMaxConnDuration(t *testing.T) {
 	serverStopCh := make(chan struct{})
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			t.Fatalf("unexpected error: %s", err)
+			t.Errorf("unexpected error: %s", err)
 		}
 		close(serverStopCh)
 	}()
@@ -1077,14 +1113,14 @@ func TestHostClientMultipleAddrs(t *testing.T) {
 
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
-			ctx.Write(ctx.Host())
+			ctx.Write(ctx.Host()) //nolint:errcheck
 			ctx.SetConnectionClose()
 		},
 	}
 	serverStopCh := make(chan struct{})
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			t.Fatalf("unexpected error: %s", err)
+			t.Errorf("unexpected error: %s", err)
 		}
 		close(serverStopCh)
 	}()
@@ -1154,7 +1190,7 @@ func TestClientFollowRedirects(t *testing.T) {
 	serverStopCh := make(chan struct{})
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			t.Fatalf("unexpected error: %s", err)
+			t.Errorf("unexpected error: %s", err)
 		}
 		close(serverStopCh)
 	}()
@@ -1489,11 +1525,11 @@ func (w *writeErrorConn) Close() error {
 	return nil
 }
 
-func (r *writeErrorConn) LocalAddr() net.Addr {
+func (w *writeErrorConn) LocalAddr() net.Addr {
 	return nil
 }
 
-func (r *writeErrorConn) RemoteAddr() net.Addr {
+func (w *writeErrorConn) RemoteAddr() net.Addr {
 	return nil
 }
 
@@ -1883,7 +1919,7 @@ func startEchoServerExt(t *testing.T, network, addr string, isTLS bool) *testEch
 			if ctx.IsGet() {
 				ctx.Success("text/plain", ctx.URI().FullURI())
 			} else if ctx.IsPost() {
-				ctx.PostArgs().WriteTo(ctx)
+				ctx.PostArgs().WriteTo(ctx) //nolint:errcheck
 			}
 		},
 		Logger: &testLogger{}, // Ignore log output.
@@ -1892,7 +1928,7 @@ func startEchoServerExt(t *testing.T, network, addr string, isTLS bool) *testEch
 	go func() {
 		err := s.Serve(ln)
 		if err != nil {
-			t.Fatalf("unexpected error returned from Serve(): %s", err)
+			t.Errorf("unexpected error returned from Serve(): %s", err)
 		}
 		close(ch)
 	}()

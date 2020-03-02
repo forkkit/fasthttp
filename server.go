@@ -148,7 +148,7 @@ type ServeHandler func(c net.Conn) error
 //
 // It is safe to call Server methods from concurrently running goroutines.
 type Server struct {
-	noCopy noCopy
+	noCopy noCopy //nolint:unused,structcheck
 
 	// Handler for processing incoming requests.
 	//
@@ -359,8 +359,8 @@ type Server struct {
 	writerPool     sync.Pool
 	hijackConnPool sync.Pool
 
-	// We need to know our listener so we can close it in Shutdown().
-	ln net.Listener
+	// We need to know our listeners so we can close them in Shutdown().
+	ln []net.Listener
 
 	mu   sync.Mutex
 	open int32
@@ -457,9 +457,9 @@ func CompressHandlerLevel(h RequestHandler, level int) RequestHandler {
 	return func(ctx *RequestCtx) {
 		h(ctx)
 		if ctx.Request.Header.HasAcceptEncodingBytes(strGzip) {
-			ctx.Response.gzipBody(level)
+			ctx.Response.gzipBody(level) //nolint:errcheck
 		} else if ctx.Request.Header.HasAcceptEncodingBytes(strDeflate) {
-			ctx.Response.deflateBody(level)
+			ctx.Response.deflateBody(level) //nolint:errcheck
 		}
 	}
 }
@@ -479,7 +479,7 @@ func CompressHandlerLevel(h RequestHandler, level int) RequestHandler {
 // running goroutines. The only exception is TimeoutError*, which may be called
 // while other goroutines accessing RequestCtx.
 type RequestCtx struct {
-	noCopy noCopy
+	noCopy noCopy //nolint:unused,structcheck
 
 	// Incoming request.
 	//
@@ -508,7 +508,8 @@ type RequestCtx struct {
 	timeoutCh       chan struct{}
 	timeoutTimer    *time.Timer
 
-	hijackHandler HijackHandler
+	hijackHandler    HijackHandler
+	hijackNoResponse bool
 }
 
 // HijackHandler must process the hijacked connection c.
@@ -535,6 +536,7 @@ type HijackHandler func(c net.Conn)
 //     * Unexpected error during response writing to the connection.
 //
 // The server stops processing requests from hijacked connections.
+//
 // Server limits such as Concurrency, ReadTimeout, WriteTimeout, etc.
 // aren't applied to hijacked connections.
 //
@@ -548,6 +550,15 @@ type HijackHandler func(c net.Conn)
 //
 func (ctx *RequestCtx) Hijack(handler HijackHandler) {
 	ctx.hijackHandler = handler
+}
+
+// HijackSetNoResponse changes the behavior of hijacking a request.
+// If HijackSetNoResponse is called with false fasthttp will send a response
+// to the client before calling the HijackHandler (default). If HijackSetNoResponse
+// is called with true no response is send back before calling the
+// HijackHandler supplied in the Hijack function.
+func (ctx *RequestCtx) HijackSetNoResponse(noResponse bool) {
+	ctx.hijackNoResponse = noResponse
 }
 
 // Hijacked returns true after Hijack is called.
@@ -1357,9 +1368,15 @@ func (ln tcpKeepaliveListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	tc.SetKeepAlive(true)
+	if err := tc.SetKeepAlive(true); err != nil {
+		tc.Close() //nolint:errcheck
+		return nil, err
+	}
 	if ln.keepalivePeriod > 0 {
-		tc.SetKeepAlivePeriod(ln.keepalivePeriod)
+		if err := tc.SetKeepAlivePeriod(ln.keepalivePeriod); err != nil {
+			tc.Close() //nolint:errcheck
+			return nil, err
+		}
 	}
 	return tc, nil
 }
@@ -1560,20 +1577,21 @@ func (s *Server) Serve(ln net.Listener) error {
 	var c net.Conn
 	var err error
 
+	maxWorkersCount := s.getConcurrency()
+
 	s.mu.Lock()
 	{
-		if s.ln != nil {
-			s.mu.Unlock()
-			return ErrAlreadyServing
+		s.ln = append(s.ln, ln)
+		if s.done == nil {
+			s.done = make(chan struct{})
 		}
 
-		s.ln = ln
-		s.done = make(chan struct{})
+		if s.concurrencyCh == nil {
+			s.concurrencyCh = make(chan struct{}, maxWorkersCount)
+		}
 	}
 	s.mu.Unlock()
 
-	maxWorkersCount := s.getConcurrency()
-	s.concurrencyCh = make(chan struct{}, maxWorkersCount)
 	wp := &workerPool{
 		WorkerFunc:      s.serveConn,
 		MaxWorkersCount: maxWorkersCount,
@@ -1646,8 +1664,10 @@ func (s *Server) Shutdown() error {
 		return nil
 	}
 
-	if err := s.ln.Close(); err != nil {
-		return err
+	for _, ln := range s.ln {
+		if err := ln.Close(); err != nil {
+			return err
+		}
 	}
 
 	if s.done != nil {
@@ -1667,6 +1687,7 @@ func (s *Server) Shutdown() error {
 		time.Sleep(time.Millisecond * 100)
 	}
 
+	s.done = nil
 	s.ln = nil
 	return nil
 }
@@ -1801,7 +1822,15 @@ func (s *Server) GetCurrentConcurrency() uint32 {
 //
 // This function is intended be used by monitoring systems
 func (s *Server) GetOpenConnectionsCount() int32 {
-	return atomic.LoadInt32(&s.open) - 1
+	if atomic.LoadInt32(&s.stop) == 0 {
+		// Decrement by one to avoid reporting the extra open value that gets
+		// counted while the server is listening.
+		return atomic.LoadInt32(&s.open) - 1
+	}
+	// This is not perfect, because s.stop could have changed to zero
+	// before we load the value of s.open. However, in the common case
+	// this avoids underreporting open connections by 1 during server shutdown.
+	return atomic.LoadInt32(&s.open)
 }
 
 func (s *Server) getConcurrency() int {
@@ -1831,16 +1860,15 @@ func (s *Server) idleTimeout() time.Duration {
 	return s.ReadTimeout
 }
 
-func (s *Server) serveConn(c net.Conn) error {
+func (s *Server) serveConn(c net.Conn) (err error) {
 	defer atomic.AddInt32(&s.open, -1)
 
-	if proto, err := s.getNextProto(c); err != nil {
-		return err
-	} else {
-		handler, ok := s.nextProtos[proto]
-		if ok {
-			return handler(c)
-		}
+	var proto string
+	if proto, err = s.getNextProto(c); err != nil {
+		return
+	}
+	if handler, ok := s.nextProtos[proto]; ok {
+		return handler(c)
 	}
 
 	var serverName []byte
@@ -1863,9 +1891,9 @@ func (s *Server) serveConn(c net.Conn) error {
 		br *bufio.Reader
 		bw *bufio.Writer
 
-		err             error
-		timeoutResponse *Response
-		hijackHandler   HijackHandler
+		timeoutResponse  *Response
+		hijackHandler    HijackHandler
+		hijackNoResponse bool
 
 		connectionClose bool
 		isHTTP11        bool
@@ -1976,12 +2004,15 @@ func (s *Server) serveConn(c net.Conn) error {
 
 		// 'Expect: 100-continue' request handling.
 		// See http://www.w3.org/Protocols/rfc2616/rfc2616-sec8.html for details.
-		if !ctx.Request.Header.ignoreBody() && ctx.Request.MayContinue() {
+		if ctx.Request.MayContinue() {
 			// Send 'HTTP/1.1 100 Continue' response.
 			if bw == nil {
 				bw = acquireWriter(ctx)
 			}
-			bw.Write(strResponseContinue)
+			_, err = bw.Write(strResponseContinue)
+			if err != nil {
+				break
+			}
 			err = bw.Flush()
 			if err != nil {
 				break
@@ -2035,6 +2066,8 @@ func (s *Server) serveConn(c net.Conn) error {
 
 		hijackHandler = ctx.hijackHandler
 		ctx.hijackHandler = nil
+		hijackNoResponse = ctx.hijackNoResponse
+		ctx.hijackNoResponse = false
 
 		ctx.userValues.Reset()
 
@@ -2062,30 +2095,32 @@ func (s *Server) serveConn(c net.Conn) error {
 			ctx.Response.Header.SetServerBytes(serverName)
 		}
 
-		if bw == nil {
-			bw = acquireWriter(ctx)
-		}
-		if err = writeResponse(ctx, bw); err != nil {
-			break
-		}
-
-		// Only flush the writer if we don't have another request in the pipeline.
-		// This is a big of an ugly optimization for https://www.techempower.com/benchmarks/
-		// This benchmark will send 16 pipelined requests. It is faster to pack as many responses
-		// in a TCP packet and send it back at once than waiting for a flush every request.
-		// In real world circumstances this behaviour could be argued as being wrong.
-		if br == nil || br.Buffered() == 0 || connectionClose {
-			err = bw.Flush()
-			if err != nil {
+		if !hijackNoResponse {
+			if bw == nil {
+				bw = acquireWriter(ctx)
+			}
+			if err = writeResponse(ctx, bw); err != nil {
 				break
 			}
-		}
-		if connectionClose {
-			break
-		}
-		if s.ReduceMemoryUsage {
-			releaseWriter(s, bw)
-			bw = nil
+
+			// Only flush the writer if we don't have another request in the pipeline.
+			// This is a big of an ugly optimization for https://www.techempower.com/benchmarks/
+			// This benchmark will send 16 pipelined requests. It is faster to pack as many responses
+			// in a TCP packet and send it back at once than waiting for a flush every request.
+			// In real world circumstances this behaviour could be argued as being wrong.
+			if br == nil || br.Buffered() == 0 || connectionClose {
+				err = bw.Flush()
+				if err != nil {
+					break
+				}
+			}
+			if connectionClose {
+				break
+			}
+			if s.ReduceMemoryUsage && hijackHandler == nil {
+				releaseWriter(s, bw)
+				bw = nil
+			}
 		}
 
 		if hijackHandler != nil {
@@ -2105,10 +2140,15 @@ func (s *Server) serveConn(c net.Conn) error {
 				releaseWriter(s, bw)
 				bw = nil
 			}
-			c.SetReadDeadline(zeroTime)
-			c.SetWriteDeadline(zeroTime)
+			err = c.SetReadDeadline(zeroTime)
+			if err != nil {
+				break
+			}
+			err = c.SetWriteDeadline(zeroTime)
+			if err != nil {
+				break
+			}
 			go hijackConnHandler(hjr, c, s, hijackHandler)
-			hijackHandler = nil
 			err = errHijacked
 			break
 		}
@@ -2136,7 +2176,7 @@ func (s *Server) serveConn(c net.Conn) error {
 		}
 		s.releaseCtx(ctx)
 	}
-	return err
+	return
 }
 
 func (s *Server) setState(nc net.Conn, state ConnState) {
@@ -2453,12 +2493,14 @@ func (s *Server) getServerName() []byte {
 }
 
 func (s *Server) writeFastError(w io.Writer, statusCode int, msg string) {
-	w.Write(statusLine(statusCode))
+	w.Write(statusLine(statusCode)) //nolint:errcheck
 
 	server := ""
 	if !s.NoDefaultServerHeader {
 		server = fmt.Sprintf("Server: %s\r\n", s.getServerName())
 	}
+
+	serverDateOnce.Do(updateServerDate)
 
 	fmt.Fprintf(w, "Connection: close\r\n"+
 		server+
@@ -2473,6 +2515,8 @@ func (s *Server) writeFastError(w io.Writer, statusCode int, msg string) {
 func defaultErrorHandler(ctx *RequestCtx, err error) {
 	if _, ok := err.(*ErrSmallBuffer); ok {
 		ctx.Error("Too big request header", StatusRequestHeaderFieldsTooLarge)
+	} else if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
+		ctx.Error("Request timeout", StatusRequestTimeout)
 	} else {
 		ctx.Error("Error when parsing request", StatusBadRequest)
 	}
@@ -2493,7 +2537,7 @@ func (s *Server) writeErrorResponse(bw *bufio.Writer, ctx *RequestCtx, serverNam
 	if bw == nil {
 		bw = acquireWriter(ctx)
 	}
-	writeResponse(ctx, bw)
+	writeResponse(ctx, bw) //nolint:errcheck
 	bw.Flush()
 	return bw
 }

@@ -153,7 +153,7 @@ var defaultClient Client
 //
 // It is safe calling Client methods from concurrently running goroutines.
 type Client struct {
-	noCopy noCopy
+	noCopy noCopy //nolint:unused,structcheck
 
 	// Client name. Used in User-Agent request header.
 	//
@@ -193,6 +193,11 @@ type Client struct {
 	// By default idle connections are closed
 	// after DefaultMaxIdleConnDuration.
 	MaxIdleConnDuration time.Duration
+
+	// Keep-alive connections are closed after this duration.
+	//
+	// By default connection duration is unlimited.
+	MaxConnDuration time.Duration
 
 	// Maximum number of attempts for idempotent calls
 	//
@@ -425,6 +430,7 @@ func (c *Client) Do(req *Request, resp *Response) error {
 			TLSConfig:                     c.TLSConfig,
 			MaxConns:                      c.MaxConnsPerHost,
 			MaxIdleConnDuration:           c.MaxIdleConnDuration,
+			MaxConnDuration:               c.MaxConnDuration,
 			MaxIdemponentCallAttempts:     c.MaxIdemponentCallAttempts,
 			ReadBufferSize:                c.ReadBufferSize,
 			WriteBufferSize:               c.WriteBufferSize,
@@ -511,7 +517,7 @@ type DialFunc func(addr string) (net.Conn, error)
 //
 // It is safe calling HostClient methods from concurrently running goroutines.
 type HostClient struct {
-	noCopy noCopy
+	noCopy noCopy //nolint:unused,structcheck
 
 	// Comma-separated list of upstream HTTP server host addresses,
 	// which are passed to Dial in a round-robin manner.
@@ -797,7 +803,9 @@ func clientPostURL(dst []byte, url string, postArgs *Args, c clientDoer) (status
 	req.Header.SetMethodBytes(strPost)
 	req.Header.SetContentTypeBytes(strPostArgsContentType)
 	if postArgs != nil {
-		postArgs.WriteTo(req.BodyWriter())
+		if _, err := postArgs.WriteTo(req.BodyWriter()); err != nil {
+			return 0, nil, err
+		}
 	}
 
 	statusCode, body, err = doRequestFollowRedirects(req, dst, url, c)
@@ -1276,9 +1284,6 @@ var (
 	// see this error.
 	ErrNoFreeConns = errors.New("no free connections available to host")
 
-	// ErrTimeout is returned from timed out calls.
-	ErrTimeout = errors.New("timeout")
-
 	// ErrConnectionClosed may be returned from client methods if the server
 	// closes connection before returning the first response byte.
 	//
@@ -1290,6 +1295,27 @@ var (
 		"Make sure the server returns 'Connection: close' response header before closing the connection")
 )
 
+type timeoutError struct {
+}
+
+func (e *timeoutError) Error() string {
+	return "timeout"
+}
+
+// Only implement the Timeout() function of the net.Error interface.
+// This allows for checks like:
+//
+//   if x, ok := err.(interface{ Timeout() bool }); ok && x.Timeout() {
+func (e *timeoutError) Timeout() bool {
+	return true
+}
+
+var (
+	// ErrTimeout is returned from timed out calls.
+	ErrTimeout = &timeoutError{}
+)
+
+// SetMaxConns sets up the maximum number of connections which may be established to all hosts listed in Addr.
 func (c *HostClient) SetMaxConns(newMaxConns int) {
 	c.connsLock.Lock()
 	c.MaxConns = newMaxConns
@@ -1480,34 +1506,7 @@ func newClientTLSConfig(c *tls.Config, addr string) *tls.Config {
 	if c == nil {
 		c = &tls.Config{}
 	} else {
-		// TODO: substitute this with c.Clone() after go1.8 becomes mainstream :)
-		c = &tls.Config{
-			Rand:              c.Rand,
-			Time:              c.Time,
-			Certificates:      c.Certificates,
-			NameToCertificate: c.NameToCertificate,
-			GetCertificate:    c.GetCertificate,
-			RootCAs:           c.RootCAs,
-			NextProtos:        c.NextProtos,
-			ServerName:        c.ServerName,
-
-			// Do not copy ClientAuth, since it is server-related stuff
-			// Do not copy ClientCAs, since it is server-related stuff
-
-			InsecureSkipVerify: c.InsecureSkipVerify,
-			CipherSuites:       c.CipherSuites,
-
-			// Do not copy PreferServerCipherSuites - this is server stuff
-
-			SessionTicketsDisabled: c.SessionTicketsDisabled,
-
-			// Do not copy SessionTicketKey - this is server stuff
-
-			ClientSessionCache: c.ClientSessionCache,
-			MinVersion:         c.MinVersion,
-			MaxVersion:         c.MaxVersion,
-			CurvePreferences:   c.CurvePreferences,
-		}
+		c = c.Clone()
 	}
 
 	if c.ClientSessionCache == nil {
@@ -1601,6 +1600,7 @@ func (c *HostClient) cachedTLSConfig(addr string) *tls.Config {
 	return cfg
 }
 
+// ErrTLSHandshakeTimeout indicates there is a timeout from tls handshake.
 var ErrTLSHandshakeTimeout = errors.New("tls handshake timed out")
 
 var timeoutErrorChPool sync.Pool
@@ -1702,7 +1702,7 @@ func addMissingPort(addr string, isTLS bool) string {
 // It is safe calling PipelineClient methods from concurrently running
 // goroutines.
 type PipelineClient struct {
-	noCopy noCopy
+	noCopy noCopy //nolint:unused,structcheck
 
 	// Address of the host to connect to.
 	Addr string
@@ -1782,7 +1782,7 @@ type PipelineClient struct {
 }
 
 type pipelineConnClient struct {
-	noCopy noCopy
+	noCopy noCopy //nolint:unused,structcheck
 
 	Addr                string
 	MaxPendingRequests  int

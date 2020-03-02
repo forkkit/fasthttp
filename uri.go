@@ -36,7 +36,7 @@ var uriPool = &sync.Pool{
 //
 // URI instance MUST NOT be used from concurrently running goroutines.
 type URI struct {
-	noCopy noCopy
+	noCopy noCopy //nolint:unused,structcheck
 
 	pathOriginal []byte
 	scheme       []byte
@@ -263,9 +263,14 @@ func (u *URI) Parse(host, uri []byte) {
 func (u *URI) parse(host, uri []byte, isTLS bool) {
 	u.Reset()
 
-	scheme, host, uri := splitHostURI(host, uri)
-	u.scheme = append(u.scheme, scheme...)
-	lowercaseBytes(u.scheme)
+	if len(host) == 0 || bytes.Contains(uri, strColonSlashSlash) {
+		scheme, newHost, newURI := splitHostURI(host, uri)
+		u.scheme = append(u.scheme, scheme...)
+		lowercaseBytes(u.scheme)
+		host = newHost
+		uri = newURI
+	}
+
 	if isTLS {
 		u.scheme = append(u.scheme[:0], strHTTPS...)
 	}
@@ -396,10 +401,6 @@ func (u *URI) RequestURI() []byte {
 		dst = append(dst, '?')
 		dst = append(dst, u.queryString...)
 	}
-	if len(u.hash) > 0 {
-		dst = append(dst, '#')
-		dst = append(dst, u.hash...)
-	}
 	u.requestURI = dst
 	return u.requestURI
 }
@@ -514,7 +515,12 @@ func (u *URI) FullURI() []byte {
 // AppendBytes appends full uri to dst and returns the extended dst.
 func (u *URI) AppendBytes(dst []byte) []byte {
 	dst = u.appendSchemeHost(dst)
-	return append(dst, u.RequestURI()...)
+	dst = append(dst, u.RequestURI()...)
+	if len(u.hash) > 0 {
+		dst = append(dst, '#')
+		dst = append(dst, u.hash...)
+	}
+	return dst
 }
 
 func (u *URI) appendSchemeHost(dst []byte) []byte {
